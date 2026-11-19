@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PyTriage AI — Autonomous Python Bug Triage Agent</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- JSZip for in-browser zip creation & extraction -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            slate: {
+              850: '#151e2e',
+              925: '#0c121e',
+              950: '#080c14',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    /* Custom subtle scrollbars for code panels */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+    .diff-add {
+      background-color: rgba(16, 185, 129, 0.14);
+      color: #6ee7b7;
+      border-left: 3px solid #10b981;
+    }
+    .diff-del {
+      background-color: rgba(244, 63, 94, 0.14);
+      color: #fda4af;
+      border-left: 3px solid #f43f5e;
+    }
+    .diff-hunk {
+      background-color: rgba(56, 189, 248, 0.1);
+      color: #7dd3fc;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-200 font-sans antialiased min-h-screen flex flex-col">
+
+  <!-- Toast / Non-Blocking Alert Banner -->
+  <div id="toastContainer" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-md pointer-events-none"></div>
+
+  <!-- Top Navigation Bar -->
+  <header class="border-b border-slate-800/80 bg-slate-925/90 backdrop-blur sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+          <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="font-bold text-base sm:text-lg tracking-tight text-white">PyTriage AI</h1>
+            <span id="headerModelBadge" class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">gemini-3.8-flash</span>
+          </div>
+          <p class="text-xs text-slate-400 hidden sm:block">Autonomous Python Bug Triage &amp; Pyodide Pytest Sandbox</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <div id="pyodideStatusBadge" class="hidden md:flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-400">
+          <span class="w-2 h-2 rounded-full bg-slate-500" id="pyodideDot"></span>
+          <span id="pyodideStatusText">Pyodide: Standby</span>
+        </div>
+        <button id="loadSampleBtn" type="button" class="text-xs sm:text-sm font-medium px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-cyan-300 border border-cyan-500/30 hover:border-cyan-400/60 transition flex items-center gap-2 shadow-sm">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+          </svg>
+          <span>Load Sample Buggy Project</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace Grid -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <!-- LEFT PANEL: Configuration & Inputs (5 cols on desktop) -->
+    <section class="lg:col-span-5 flex flex-col gap-5">
+
+      <!-- Card 1: Gemini API Key & Execution Mode -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <label for="apiKeyInput" class="text-xs font-semibold uppercase tracking-wider text-slate-400">1. Gemini API Key &amp; Model</label>
+          <span class="text-[11px] text-slate-500 flex items-center gap-1">
+            <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            Session memory only
+          </span>
+        </div>
+
+        <div class="flex flex-col sm:flex-row gap-2">
+          <div class="relative flex-1">
+            <input id="apiKeyInput" type="password" placeholder="AIzaSy..." autocomplete="off"
+              class="w-full bg-slate-950 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-3.5 py-2.5 pr-11 text-sm font-mono text-slate-100 placeholder-slate-600 outline-none transition" />
+            <button id="toggleKeyBtn" type="button" title="Show/Hide API Key"
+              class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-200">
+              <svg id="eyeIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+              </svg>
+            </button>
+          </div>
+
+          <select id="modelSelect" title="Select Gemini Model"
+            class="sm:w-44 bg-slate-950 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-3 py-2.5 text-xs font-mono text-indigo-300 outline-none transition">
+            <option value="gemini-3.8-flash" selected>gemini-3.8-flash</option>
+            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            <option value="custom">Custom model...</option>
+          </select>
+        </div>
+
+        <input id="customModelInput" type="text" placeholder="e.g. gemini-3.8-flash-preview"
+          class="hidden mt-2 w-full bg-slate-950 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-3.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 outline-none transition" />
+
+        <!-- Mode Selector -->
+        <div class="mt-5">
+          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">2. Agent Architecture Mode</label>
+          <div class="grid grid-cols-2 gap-2.5 p-1 bg-slate-950 rounded-xl border border-slate-800">
+            <button type="button" id="modeMvpBtn" onclick="setAgentMode('mvp')"
+              class="mode-btn text-left p-2.5 rounded-lg border transition">
+              <div class="text-xs font-semibold text-white flex items-center justify-between">
+                <span>Foundation MVP</span>
+                <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">Fast</span>
+              </div>
+              <p class="text-[11px] text-slate-400 mt-1 leading-snug">Vision + AST search + root cause + patch diff</p>
+            </button>
+
+            <button type="button" id="modeAdvBtn" onclick="setAgentMode('advanced')"
+              class="mode-btn text-left p-2.5 rounded-lg border transition">
+              <div class="text-xs font-semibold text-white flex items-center justify-between">
+                <span>Advanced Loop</span>
+                <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">Pytest</span>
+              </div>
+              <p class="text-[11px] text-slate-400 mt-1 leading-snug">Writes failing pytest, runs in Pyodide &amp; self-refines</p>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Project Archive & Bug Evidence -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col gap-4">
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold uppercase tracking-wider text-slate-400">3. Python Project (.zip)</label>
+            <span id="zipFileCountBadge" class="hidden text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">0 files indexed</span>
+          </div>
+
+          <label for="zipInput" id="zipDropZone"
+            class="flex flex-col items-center justify-center w-full p-4 border-2 border-dashed border-slate-700 hover:border-indigo-500/70 rounded-xl bg-slate-950/60 hover:bg-slate-950 cursor-pointer transition group">
+            <svg class="w-7 h-7 text-slate-500 group-hover:text-indigo-400 mb-1.5 transition" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <span id="zipLabelText" class="text-xs font-medium text-slate-300">Click to upload project <code class="text-indigo-300">.zip</code> or drag &amp; drop</span>
+            <span class="text-[11px] text-slate-500 mt-0.5">Extracts &amp; parses Python AST symbols locally</span>
+            <input id="zipInput" type="file" accept=".zip" class="hidden" />
+          </label>
+
+          <!-- Indexed Files Drawer -->
+          <div id="filePreviewBox" class="hidden mt-2.5 bg-slate-950 border border-slate-800 rounded-xl p-2.5 max-h-36 overflow-y-auto">
+            <div class="text-[11px] font-mono text-slate-400 mb-1.5 flex items-center justify-between">
+              <span>Indexed Python Modules:</span>
+              <button type="button" id="inspectCodeBtn" class="text-indigo-400 hover:underline">Inspect Code</button>
+            </div>
+            <ul id="indexedFilesList" class="space-y-1 text-xs font-mono text-slate-300"></ul>
+          </div>
+        </div>
+
+        <!-- Bug Description -->
+        <div>
+          <label for="bugDescription" class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">4. Bug Description / Traceback</label>
+          <textarea id="bugDescription" rows="4"
+            placeholder="Describe the bug or paste a Python traceback here..."
+            class="w-full bg-slate-950 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl p-3 text-xs sm:text-sm font-mono text-slate-200 placeholder-slate-600 outline-none transition resize-y"></textarea>
+        </div>
+
+        <!-- Optional Screenshot Upload -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
+              <label class="text-xs font-semibold uppercase tracking-wider text-slate-400">5. Error Screenshot</label>
+              <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">Optional</span>
+            </div>
+            <button type="button" id="clearScreenshotBtn" class="hidden text-[11px] font-medium text-rose-400 hover:underline">Remove</button>
+          </div>
+          <label for="screenshotInput" id="screenshotDropZone"
+            class="flex items-center justify-between gap-3 w-full p-3 border border-dashed border-slate-700 hover:border-cyan-500/60 rounded-xl bg-slate-950/60 cursor-pointer transition">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center shrink-0 text-cyan-400">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </div>
+              <div class="truncate">
+                <div id="screenshotName" class="text-xs font-medium text-slate-300 truncate">Skip or attach terminal/IDE screenshot (PNG/JPG/WebP)</div>
+                <div class="text-[11px] text-slate-500">Not required — Gemini Vision parses stack frames only if attached</div>
+              </div>
+            </div>
+            <span class="text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 shrink-0">Browse</span>
+            <input id="screenshotInput" type="file" accept="image/png,image/jpeg,image/webp" class="hidden" />
+          </label>
+          <div id="screenshotPreviewWrap" class="hidden mt-2 relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
+            <img id="screenshotPreviewImg" alt="Error Screenshot Preview" class="max-h-40 w-full object-contain mx-auto" />
+          </div>
+        </div>
+
+        <!-- Run Triage CTA -->
+        <button id="runTriageBtn" type="button"
+          class="w-full py-3 px-4 rounded-xl font-semibold text-sm text-white bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-600/25 transition flex items-center justify-center gap-2">
+          <svg id="runIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span id="runBtnLabel">Run Autonomous Bug Triage</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: Live Execution Trace & Developer Triage Report (7 cols on desktop) -->
+    <section class="lg:col-span-7 flex flex-col gap-5">
+
+      <!-- Live Agent Execution Stepper -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Agent Execution Pipeline</h2>
+          <span id="pipelineTimer" class="text-xs font-mono text-slate-500">Ready</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5" id="stepperGrid">
+          <!-- Step 1 -->
+          <div id="step-1" class="step-card p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 transition">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-mono text-slate-500">STEP 01</span>
+              <span class="step-indicator w-2 h-2 rounded-full bg-slate-700"></span>
+            </div>
+            <div class="text-xs font-semibold text-slate-200">Unzip &amp; AST Index</div>
+            <div class="step-sub text-[11px] text-slate-500 mt-0.5 truncate">Waiting for archive</div>
+          </div>
+
+          <!-- Step 2 -->
+          <div id="step-2" class="step-card p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 transition">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-mono text-slate-500">STEP 02</span>
+              <span class="step-indicator w-2 h-2 rounded-full bg-slate-700"></span>
+            </div>
+            <div class="text-xs font-semibold text-slate-200">Multimodal Parse</div>
+            <div class="step-sub text-[11px] text-slate-500 mt-0.5 truncate">Text + Vision trace</div>
+          </div>
+
+          <!-- Step 3 -->
+          <div id="step-3" class="step-card p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 transition">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-mono text-slate-500">STEP 03</span>
+              <span class="step-indicator w-2 h-2 rounded-full bg-slate-700"></span>
+            </div>
+            <div class="text-xs font-semibold text-slate-200">Suspect &amp; Diff</div>
+            <div class="step-sub text-[11px] text-slate-500 mt-0.5 truncate">Root-cause localization</div>
+          </div>
+
+          <!-- Step 4 -->
+          <div id="step-4" class="step-card p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 transition">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-[11px] font-mono text-slate-500">STEP 04</span>
+              <span class="step-indicator w-2 h-2 rounded-full bg-slate-700"></span>
+            </div>
+            <div class="text-xs font-semibold text-slate-200">Pytest Sandbox</div>
+            <div class="step-sub text-[11px] text-slate-500 mt-0.5 truncate">Pyodide verification</div>
+          </div>
+        </div>
+
+        <!-- Live Execution Console Stream -->
+        <div id="liveConsole" class="mt-4 bg-slate-950 border border-slate-800/90 rounded-xl p-3 font-mono text-xs text-slate-400 max-h-36 overflow-y-auto space-y-1">
+          <div class="text-slate-500">&gt; PyTriage AI initialized. Upload a Python .zip or click "Load Sample Buggy Project" to begin.</div>
+        </div>
+      </div>
+
+      <!-- Empty State Placeholder before Report is Generated -->
+      <div id="emptyReportState" class="flex-1 bg-slate-900/50 border border-dashed border-slate-800 rounded-2xl p-10 flex flex-col items-center justify-center text-center">
+        <div class="w-12 h-12 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center text-indigo-400 mb-3">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <h3 class="text-sm font-semibold text-slate-200">No Triage Report Generated Yet</h3>
+        <p class="text-xs text-slate-400 max-w-md mt-1.5 leading-relaxed">
+          Provide your Gemini API key, load a Python <code class="text-slate-300">.zip</code> archive, and run the agent. In <strong class="text-indigo-300">Advanced Loop</strong> mode, PyTriage AI writes a failing <code class="text-cyan-300">pytest</code> case and executes it inside an isolated WebAssembly Python sandbox.
+        </p>
+      </div>
+
+      <!-- DEVELOPER TRIAGE REPORT (Hidden until generated) -->
+      <div id="triageReportContainer" class="hidden flex flex-col gap-5">
+
+        <!-- Report Header & Status Badge -->
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+          <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-800">
+            <div>
+              <span class="text-[11px] font-mono uppercase tracking-wider text-indigo-400">Developer Triage Report</span>
+              <h2 id="reportExceptionTitle" class="text-lg font-bold text-white font-mono mt-0.5">ZeroDivisionError: division by zero</h2>
+            </div>
+            <span id="reproStatusBadge" class="text-xs font-mono font-semibold px-3 py-1.5 rounded-full border">
+              NOT_RUN (MVP)
+            </span>
+          </div>
+
+          <!-- Root Cause Explanation -->
+          <div class="mt-4">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Root Cause Hypothesis</h3>
+            <p id="reportRootCause" class="text-sm text-slate-200 leading-relaxed bg-slate-950/70 border border-slate-800/80 rounded-xl p-3.5"></p>
+          </div>
+
+          <!-- Extracted Stack Frames -->
+          <div class="mt-4">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Extracted Stack Frames</h3>
+            <div class="overflow-x-auto rounded-xl border border-slate-800">
+              <table class="w-full text-left text-xs font-mono">
+                <thead class="bg-slate-950 text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th class="py-2 px-3">File</th>
+                    <th class="py-2 px-3">Line</th>
+                    <th class="py-2 px-3">Function</th>
+                    <th class="py-2 px-3">Context</th>
+                  </tr>
+                </thead>
+                <tbody id="stackFramesTableBody" class="divide-y divide-slate-800/70 bg-slate-900/40 text-slate-300"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Suspect Files & Functions -->
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+          <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Suspect Locations</h3>
+          <div id="suspectsList" class="space-y-3"></div>
+        </div>
+
+        <!-- Pytest Reproduction & Pyodide Sandbox Output (Visible in Advanced Mode) -->
+        <div id="pytestSandboxSection" class="hidden bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div class="flex items-center gap-2">
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Pytest Reproduction &amp; Sandbox Output</h3>
+              <span id="attemptCountBadge" class="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Attempt 1/3</span>
+            </div>
+            <button type="button" id="copyTestBtn" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+              Copy test_agent_repro.py
+            </button>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3">
+            <div>
+              <div class="text-[11px] font-mono text-slate-400 mb-1">Generated Test (<code>test_agent_repro.py</code>):</div>
+              <pre id="generatedTestCode" class="bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs font-mono text-cyan-200 overflow-x-auto max-h-56"></pre>
+            </div>
+            <div>
+              <div class="text-[11px] font-mono text-slate-400 mb-1">Isolated Pyodide Sandbox Stdout / Stderr:</div>
+              <pre id="sandboxLogsOutput" class="bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-xs font-mono text-slate-300 overflow-x-auto max-h-56"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Suggested Fix (Unified Diff) & Developer Approval Actions -->
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
+          <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Suggested Fix (Unified Diff)</h3>
+              <p class="text-[11px] text-slate-500 mt-0.5">Review patch before exporting modified archive</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" id="copyPatchBtn"
+                class="text-xs font-medium px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 transition flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span>Copy Patch</span>
+              </button>
+
+              <button type="button" id="downloadPatchedZipBtn"
+                class="text-xs font-semibold px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 transition flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span>Approve &amp; Download Patched ZIP</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="diffViewer" class="bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs overflow-x-auto leading-relaxed"></div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <!-- Code Inspector Modal -->
+  <div id="codeModal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-3xl w-full max-h-[82vh] flex flex-col shadow-2xl">
+      <div class="flex items-center justify-between px-5 py-3.5 border-b border-slate-800">
+        <h3 class="text-sm font-semibold text-white">Workspace Python Files</h3>
+        <button type="button" id="closeCodeModalBtn" class="text-slate-400 hover:text-white p-1 rounded-lg">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div id="modalCodeContent" class="p-5 overflow-y-auto space-y-4 font-mono text-xs"></div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // GLOBAL APPLICATION STATE & UI HELPERS
+    // =========================================================================
+    const state = {
+      mode: 'advanced', // 'mvp' or 'advanced'
+      zipFileName: 'project.zip',
+      allZipFiles: {},   // All text files in the archive
+      projectFiles: {},  // Python (.py) files indexed for triage
+      symbolIndex: [],   // AST-like function/class index
+      screenshotBase64: null,
+      screenshotMimeType: null,
+      pyodide: null,
+      pyodideReady: false,
+      pytestInstalled: false,
+      latestReport: null,
+    };
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      const colors = {
+        info: 'bg-slate-900 border-indigo-500/50 text-slate-100',
+        success: 'bg-slate-900 border-emerald-500/50 text-emerald-200',
+        warning: 'bg-slate-900 border-amber-500/50 text-amber-200',
+        error: 'bg-slate-900 border-rose-500/50 text-rose-200',
+      };
+      const toast = document.createElement('div');
+      toast.className = `pointer-events-auto px-4 py-3 rounded-xl border shadow-2xl text-xs font-medium transition-all duration-300 ${colors[type] || colors.info}`;
+      toast.textContent = message;
+      container.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+      }, 4200);
+    }
+
+    function logConsole(msg, level = 'muted') {
+      const consoleEl = document.getElementById('liveConsole');
+      if (!consoleEl) return;
+      const colorMap = {
+        muted: 'text-slate-400',
+        info: 'text-cyan-300',
+        success: 'text-emerald-400',
+        warn: 'text-amber-300',
+        error: 'text-rose-400',
+      };
+      const ts = new Date().toLocaleTimeString([], { hour12: false });
+      const line = document.createElement('div');
+      line.className = colorMap[level] || 'text-slate-300';
+      line.textContent = `[${ts}] ${msg}`;
+      consoleEl.appendChild(line);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    function setStepState(stepNum, status, subText) {
+      const card = document.getElementById(`step-${stepNum}`);
+      if (!card) return;
+      const dot = card.querySelector('.step-indicator');
+      const sub = card.querySelector('.step-sub');
+
+      card.classList.remove('border-slate-800/90', 'border-indigo-500/60', 'border-emerald-500/50', 'border-rose-500/50', 'bg-indigo-950/20');
+      dot.classList.remove('bg-slate-700', 'bg-indigo-400', 'animate-pulse', 'bg-emerald-400', 'bg-rose-400');
+
+      if (status === 'active') {
+        card.classList.add('border-indigo-500/60', 'bg-indigo-950/20');
+        dot.classList.add('bg-indigo-400', 'animate-pulse');
+      } else if (status === 'done') {
+        card.classList.add('border-emerald-500/50');
+        dot.classList.add('bg-emerald-400');
+      } else if (status === 'error') {
+        card.classList.add('border-rose-500/50');
+        dot.classList.add('bg-rose-400');
+      } else {
+        card.classList.add('border-slate-800/90');
+        dot.classList.add('bg-slate-700');
+      }
+
+      if (sub && subText !== undefined) {
+        sub.textContent = subText;
+      }
+    }
+
+    function getActiveModel() {
+      const selectEl = document.getElementById('modelSelect');
+      const customEl = document.getElementById('customModelInput');
+      if (selectEl && selectEl.value === 'custom') {
+        return (customEl?.value || '').trim() || 'gemini-3.8-flash';
+      }
+      return selectEl ? selectEl.value : 'gemini-3.8-flash';
+    }
+
+    function setAgentMode(mode) {
+      state.mode = mode;
+      const mvpBtn = document.getElementById('modeMvpBtn');
+      const advBtn = document.getElementById('modeAdvBtn');
+      if (!mvpBtn || !advBtn) return;
+
+      if (mode === 'mvp') {
+        mvpBtn.className = 'mode-btn text-left p-2.5 rounded-lg border border-indigo-500/60 bg-indigo-500/10 transition';
+        advBtn.className = 'mode-btn text-left p-2.5 rounded-lg border border-transparent hover:border-slate-800 transition';
+      } else {
+        advBtn.className = 'mode-btn text-left p-2.5 rounded-lg border border-indigo-500/60 bg-indigo-500/10 transition';
+        mvpBtn.className = 'mode-btn text-left p-2.5 rounded-lg border border-transparent hover:border-slate-800 transition';
+      }
+    }
+
+    // Initialize default mode & model UI listeners
+    setAgentMode('advanced');
+
+    document.getElementById('toggleKeyBtn').addEventListener('click', () => {
+      const input = document.getElementById('apiKeyInput');
+      input.type = input.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('modelSelect').addEventListener('change', (e) => {
+      const customInput = document.getElementById('customModelInput');
+      const badge = document.getElementById('headerModelBadge');
+      if (e.target.value === 'custom') {
+        customInput.classList.remove('hidden');
+        customInput.focus();
+      } else {
+        customInput.classList.add('hidden');
+      }
+      if (badge) badge.textContent = getActiveModel();
+    });
+
+    document.getElementById('customModelInput').addEventListener('input', () => {
+      const badge = document.getElementById('headerModelBadge');
+      if (badge) badge.textContent = getActiveModel();
+    });
+
+    // =========================================================================
+    // ZIP ARCHIVE EXTRACTION & PYTHON SYMBOL INDEXER
+    // =========================================================================
+    const IGNORED_PATH_PARTS = ['.git/', '__pycache__/', '.venv/', 'venv/', 'node_modules/', '.pytest_cache/', '.DS_Store'];
+
+    function buildSymbolIndex(pyFilesMap) {
+      const symbols = [];
+      const defRegex = /^\s*(?:async\s+)?(def|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*[\(:]/;
+      for (const [filePath, content] of Object.entries(pyFilesMap)) {
+        const lines = content.split(/\r?\n/);
+        lines.forEach((line, idx) => {
+          const match = line.match(defRegex);
+          if (match) {
+            symbols.push({
+              file: filePath,
+              type: match[1] === 'class' ? 'ClassDef' : 'FunctionDef',
+              symbol: match[2],
+              line: idx + 1,
+            });
+          }
+        });
+      }
+      return symbols;
+    }
+
+    async function processProjectZipBuffer(arrayBuffer, fileName) {
+      if (typeof JSZip === 'undefined') {
+        throw new Error('JSZip library failed to load. Check your internet connection.');
+      }
+
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      const rawEntries = [];
+
+      zip.forEach((relativePath, zipEntry) => {
+        if (zipEntry.dir) return;
+        if (IGNORED_PATH_PARTS.some(part => relativePath.includes(part))) return;
+        if (relativePath.split('/').some(seg => seg.startsWith('.'))) return;
+        rawEntries.push({ path: relativePath, entry: zipEntry });
+      });
+
+      if (rawEntries.length === 0) {
+        throw new Error('The uploaded ZIP archive contains no readable files.');
+      }
+
+      // Strip single top-level wrapper directory if all entries share one (e.g. "sample_billing_project/app.py" -> "app.py")
+      const topDirs = new Set(rawEntries.map(e => (e.path.includes('/') ? e.path.split('/')[0] : '')));
+      const stripPrefix = topDirs.size === 1 && ![...topDirs][0] === false && [...topDirs][0] !== ''
+        ? `${[...topDirs][0]}/`
+        : '';
+
+      const allZipFiles = {};
+      const projectFiles = {};
+
+      for (const item of rawEntries) {
+        const cleanPath = stripPrefix && item.path.startsWith(stripPrefix)
+          ? item.path.slice(stripPrefix.length)
+          : item.path;
+        if (!cleanPath) continue;
+
+        try {
+          const text = await item.entry.async('string');
+          allZipFiles[cleanPath] = text;
+          if (cleanPath.endsWith('.py')) {
+            projectFiles[cleanPath] = text;
+          }
+        } catch (_) {
+          // Skip binary assets
+        }
+      }
+
+      const pyCount = Object.keys(projectFiles).length;
+      if (pyCount === 0) {
+        throw new Error('No Python (.py) source files were found inside the ZIP archive.');
+      }
+
+      state.zipFileName = fileName || 'project.zip';
+      state.allZipFiles = allZipFiles;
+      state.projectFiles = projectFiles;
+      state.symbolIndex = buildSymbolIndex(projectFiles);
+
+      // Update UI badges and file list
+      document.getElementById('zipLabelText').innerHTML = `<span class="text-emerald-300 font-semibold">${escapeHtml(state.zipFileName)}</span> loaded`;
+      const countBadge = document.getElementById('zipFileCountBadge');
+      countBadge.textContent = `${pyCount} .py file${pyCount === 1 ? '' : 's'} indexed`;
+      countBadge.classList.remove('hidden');
+
+      const filePreviewBox = document.getElementById('filePreviewBox');
+      const listEl = document.getElementById('indexedFilesList');
+      filePreviewBox.classList.remove('hidden');
+      listEl.innerHTML = Object.keys(projectFiles)
+        .map(p => {
+          const syms = state.symbolIndex.filter(s => s.file === p).map(s => s.symbol);
+          return `<li class="flex items-center justify-between gap-2 py-0.5 border-b border-slate-900 last:border-0">
+            <span class="text-cyan-300 truncate">${escapeHtml(p)}</span>
+            <span class="text-[10px] text-slate-500 shrink-0">${syms.length ? escapeHtml(syms.join(', ')) : 'script'}</span>
+          </li>`;
+        })
+        .join('');
+
+      setStepState(1, 'done', `${pyCount} .py files, ${state.symbolIndex.length} symbols`);
+      logConsole(`Indexed "${state.zipFileName}": ${pyCount} Python file(s) and ${state.symbolIndex.length} function/class symbol(s).`, 'success');
+    }
+
+    // File input & Drag-and-Drop handlers for .zip
+    const zipInput = document.getElementById('zipInput');
+    const zipDropZone = document.getElementById('zipDropZone');
+
+    zipInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const buf = await file.arrayBuffer();
+        await processProjectZipBuffer(buf, file.name);
+        showToast(`Loaded ${file.name}`, 'success');
+      } catch (err) {
+        logConsole(`ZIP Error: ${err.message}`, 'error');
+        showToast(err.message, 'error');
+      } finally {
+        zipInput.value = '';
+      }
+    });
+
+    ['dragenter', 'dragover'].forEach(evtName => {
+      zipDropZone.addEventListener(evtName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        zipDropZone.classList.add('border-indigo-500', 'bg-slate-900');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(evtName => {
+      zipDropZone.addEventListener(evtName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        zipDropZone.classList.remove('border-indigo-500', 'bg-slate-900');
+      });
+    });
+
+    zipDropZone.addEventListener('drop', async (e) => {
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        showToast('Please drop a .zip archive containing your Python project.', 'warning');
+        return;
+      }
+      try {
+        const buf = await file.arrayBuffer();
+        await processProjectZipBuffer(buf, file.name);
+        showToast(`Loaded ${file.name}`, 'success');
+      } catch (err) {
+        logConsole(`ZIP Error: ${err.message}`, 'error');
+        showToast(err.message, 'error');
+      }
+    });
+
+    // Inspect Code Modal
+    document.getElementById('inspectCodeBtn').addEventListener('click', () => {
+      const modal = document.getElementById('codeModal');
+      const contentEl = document.getElementById('modalCodeContent');
+      contentEl.innerHTML = Object.entries(state.projectFiles)
+        .map(([path, code]) => `
+          <div class="border border-slate-800 rounded-xl overflow-hidden">
+            <div class="bg-slate-950 px-3.5 py-2 text-cyan-300 font-semibold border-b border-slate-800">${escapeHtml(path)}</div>
+            <pre class="p-3.5 bg-slate-950/60 text-slate-300 overflow-x-auto leading-relaxed">${escapeHtml(code)}</pre>
+          </div>
+        `)
+        .join('');
+      modal.classList.remove('hidden');
+    });
+
+    document.getElementById('closeCodeModalBtn').addEventListener('click', () => {
+      document.getElementById('codeModal').classList.add('hidden');
+    });
+
+    // =========================================================================
+    // OPTIONAL SCREENSHOT UPLOAD & PREVIEW
+    // =========================================================================
+    const screenshotInput = document.getElementById('screenshotInput');
+    const clearScreenshotBtn = document.getElementById('clearScreenshotBtn');
+
+    screenshotInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        const commaIdx = dataUrl.indexOf(',');
+        state.screenshotBase64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : null;
+        state.screenshotMimeType = file.type || 'image/png';
+
+        document.getElementById('screenshotName').textContent = file.name;
+        document.getElementById('screenshotPreviewImg').src = dataUrl;
+        document.getElementById('screenshotPreviewWrap').classList.remove('hidden');
+        clearScreenshotBtn.classList.remove('hidden');
+        logConsole(`Attached optional error screenshot: ${file.name} (${state.screenshotMimeType})`, 'info');
+      };
+      reader.readAsDataURL(file);
+    });
+
+    clearScreenshotBtn.addEventListener('click', () => {
+      state.screenshotBase64 = null;
+      state.screenshotMimeType = null;
+      screenshotInput.value = '';
+      document.getElementById('screenshotName').textContent = 'Skip or attach terminal/IDE screenshot (PNG/JPG/WebP)';
+      document.getElementById('screenshotPreviewWrap').classList.add('hidden');
+      clearScreenshotBtn.classList.add('hidden');
+      logConsole('Removed error screenshot (running in text-only mode).', 'muted');
+    });
+
+    // =========================================================================
+    // 1-CLICK SAMPLE BUGGY PROJECT GENERATOR
+    // =========================================================================
+    document.getElementById('loadSampleBtn').addEventListener('click', async () => {
+      try {
+        const zip = new JSZip();
+        zip.file('sample_billing_project/calculator.py', `def calculate_split(total_amount: float, num_people: int) -> float:
+    """Calculates how much each person owes for a shared bill."""
+    if total_amount < 0:
+        raise ValueError("Total amount cannot be negative")
+    # BUG: num_people == 0 is not guarded before division
+    return round(total_amount / num_people, 2)
+
+
+def apply_discount(amount: float, discount_percent: float) -> float:
+    """Applies a percentage discount to an amount."""
+    if not (0 <= discount_percent <= 100):
+        raise ValueError("Discount percent must be between 0 and 100")
+    return round(amount * (1 - discount_percent / 100), 2)
+`);
+        zip.file('sample_billing_project/utils/parser.py', `from typing import Dict, Any
+
+
+def parse_split_request(payload: Dict[str, Any]) -> tuple[float, int]:
+    """Extracts total amount and participant count from a request payload."""
+    raw_total = payload.get("total", 0.0)
+    raw_people = payload.get("people", 0)
+    return float(raw_total), int(raw_people)
+`);
+        zip.file('sample_billing_project/app.py', `from typing import Dict, Any
+from calculator import calculate_split, apply_discount
+from utils.parser import parse_split_request
+
+
+def process_bill(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Processes a bill payload and returns per-person share."""
+    total, people = parse_split_request(payload)
+    discounted_total = apply_discount(total, payload.get("discount", 0.0))
+    per_person = calculate_split(discounted_total, people)
+    return {
+        "discounted_total": discounted_total,
+        "people": people,
+        "per_person": per_person,
+    }
+
+
+if __name__ == "__main__":
+    sample_payload = {"total": 120.0, "people": 0, "discount": 10.0}
+    print(process_bill(sample_payload))
+`);
+
+        const buf = await zip.generateAsync({ type: 'arraybuffer' });
+        await processProjectZipBuffer(buf, 'sample_buggy_project.zip');
+
+        document.getElementById('bugDescription').value = `Traceback (most recent call last):
+  File "app.py", line 20, in <module>
+    print(process_bill(sample_payload))
+  File "app.py", line 11, in process_bill
+    per_person = calculate_split(discounted_total, people)
+  File "calculator.py", line 6, in calculate_split
+    return round(total_amount / num_people, 2)
+ZeroDivisionError: division by zero`;
+
+        showToast('Sample buggy project & traceback loaded!', 'success');
+      } catch (err) {
+        showToast('Failed to load sample project: ' + err.message, 'error');
+      }
+    });
+
+    // =========================================================================
+    // GEMINI REST API CLIENT (FAST STRUCTURED OUTPUT + TIMEOUT GUARD)
+    // =========================================================================
+    async function callGeminiStructured({ apiKey, parts, responseSchema, temperature = 0.15, timeoutMs = 45000 }) {
+      const modelId = getActiveModel().replace(/^models\//, '');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+      const generationConfig = {
+        temperature,
+        maxOutputTokens: 4096,
+        responseMimeType: 'application/json',
+        responseSchema,
+      };
+
+      // Disable prolonged thinking tokens on Flash models so structured JSON returns rapidly
+      if (modelId.includes('flash')) {
+        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+
+      const payload = {
+        contents: [{ role: 'user', parts }],
+        generationConfig,
+      };
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          throw new Error(`Gemini request timed out after ${Math.round(timeoutMs / 1000)}s. Try Foundation MVP mode or check your network/API key.`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      const data = await res.json();
+      if (!res.ok) {
+        const errMsg = data?.error?.message || `Gemini API HTTP ${res.status}`;
+        throw new Error(errMsg);
+      }
+
+      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) {
+        throw new Error('Gemini returned an empty structured response payload.');
+      }
+
+      try {
+        return JSON.parse(rawText);
+      } catch (e) {
+        throw new Error('Failed to parse Gemini structured JSON output: ' + e.message);
+      }
+    }
+
+    // Step 2: Extract Error & Stack Frames (Multimodal Vision + Text)
+    async function extractErrorWithGemini(apiKey, bugDescription) {
+      const schema = {
+        type: 'OBJECT',
+        properties: {
+          exception_type: { type: 'STRING', description: 'Python exception class name, e.g., ZeroDivisionError, KeyError, TypeError' },
+          error_message: { type: 'STRING', description: 'Exact exception message' },
+          summary: { type: 'STRING', description: 'Concise 1-sentence summary of the failure' },
+          frames: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                file_path: { type: 'STRING', description: 'Relative file path from project root' },
+                line_number: { type: 'INTEGER' },
+                function_name: { type: 'STRING' },
+                code_context: { type: 'STRING' },
+              },
+              required: ['file_path', 'line_number', 'function_name'],
+              propertyOrdering: ['file_path', 'line_number', 'function_name', 'code_context'],
+            },
+          },
+        },
+        required: ['exception_type', 'error_message', 'summary', 'frames'],
+        propertyOrdering: ['exception_type', 'error_message', 'summary', 'frames'],
+      };
+
+      const projectFileList = Object.keys(state.projectFiles).join(', ');
+      const parts = [
+        {
+          text: `You are an expert Python debugging parser. Extract the Python exception type, error message, summary, and stack frames from the user's bug description and/or attached error screenshot.
+Normalize file paths to match the uploaded project files where applicable: [${projectFileList}].
+
+User Bug Description:
+${bugDescription || '(No text description provided — inspect the attached screenshot.)'}`,
+        },
+      ];
+
+      if (state.screenshotBase64) {
+        parts.push({
+          inline_data: {
+            mime_type: state.screenshotMimeType || 'image/png',
+            data: state.screenshotBase64,
+          },
+        });
+      }
+
+      return await callGeminiStructured({ apiKey, parts, responseSchema: schema, temperature: 0.1, timeoutMs: 30000 });
+    }
+
+    // Step 3: Localize Suspects, Generate Pytest Case & Unified Diff Patch
+    async function generateHypothesisWithGemini(apiKey, parsedError, bugDescription, feedbackHistory = '') {
+      const isMvp = state.mode === 'mvp';
+      const schema = {
+        type: 'OBJECT',
+        properties: {
+          root_cause: { type: 'STRING', description: 'Concise 2-4 sentence technical explanation of why the bug happens.' },
+          suspects: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                file_path: { type: 'STRING' },
+                function_name: { type: 'STRING' },
+                start_line: { type: 'INTEGER' },
+                end_line: { type: 'INTEGER' },
+                reasoning: { type: 'STRING' },
+              },
+              required: ['file_path', 'function_name', 'start_line', 'end_line', 'reasoning'],
+              propertyOrdering: ['file_path', 'function_name', 'start_line', 'end_line', 'reasoning'],
+            },
+          },
+          reproduction_test_code: {
+            type: 'STRING',
+            description: isMvp
+              ? 'Empty string in MVP mode.'
+              : 'Short standalone pytest file (test_agent_repro.py) that imports the suspect function and triggers the bug so pytest FAILS on the unpatched code.',
+          },
+          suggested_diff: {
+            type: 'STRING',
+            description: 'Compact unified diff (--- a/file.py, +++ b/file.py, @@ ... @@) fixing the root cause cleanly.',
+          },
+          patched_files: {
+            type: 'ARRAY',
+            description: 'Only the modified Python file(s) with complete updated contents.',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                file_path: { type: 'STRING' },
+                updated_content: { type: 'STRING' },
+              },
+              required: ['file_path', 'updated_content'],
+              propertyOrdering: ['file_path', 'updated_content'],
+            },
+          },
+        },
+        required: ['root_cause', 'suspects', 'reproduction_test_code', 'suggested_diff', 'patched_files'],
+        propertyOrdering: ['root_cause', 'suspects', 'reproduction_test_code', 'suggested_diff', 'patched_files'],
+      };
+
+      // Assemble numbered source files + AST symbol map
+      const codebaseDump = Object.entries(state.projectFiles)
+        .map(([path, content]) => {
+          const numbered = content
+            .split(/\r?\n/)
+            .map((line, i) => `${i + 1}: ${line}`)
+            .join('\n');
+          return `=== FILE: ${path} ===\n${numbered}`;
+        })
+        .join('\n\n');
+
+      const prompt = `You are a Principal Python Debugging Engineer.
+Analyze the parsed error and Python codebase below and return a concise structured JSON response.
+
+PARSED ERROR:
+${JSON.stringify(parsedError, null, 2)}
+
+ORIGINAL USER REPORT:
+${bugDescription}
+
+AST SYMBOL INDEX:
+${JSON.stringify(state.symbolIndex, null, 2)}
+
+CODEBASE (with 1-indexed line numbers):
+${codebaseDump}
+
+${feedbackHistory}
+
+CRITICAL INSTRUCTIONS:
+1. Keep explanations sharp and concise.
+2. Identify the exact suspect files, function names, and line ranges.
+3. ${isMvp
+        ? 'Set "reproduction_test_code" to "".'
+        : 'In "reproduction_test_code", write a short self-contained pytest module ("test_agent_repro.py") importing from the project root that asserts expected healthy behavior so it FAILS (Exit Code 1) on the current buggy code.'}
+4. Provide a clean unified diff in "suggested_diff" and include ONLY modified files in "patched_files".`;
+
+      return await callGeminiStructured({
+        apiKey,
+        parts: [{ text: prompt }],
+        responseSchema: schema,
+        temperature: 0.15,
+        timeoutMs: 45000,
+      });
+    }
+
+    // =========================================================================
+    // PYODIDE (WEBASSEMBLY PYTHON) ISOLATED PYTEST SANDBOX
+    // =========================================================================
+    function updatePyodideBadge(status, colorClass) {
+      const textEl = document.getElementById('pyodideStatusText');
+      const dotEl = document.getElementById('pyodideDot');
+      if (textEl) textEl.textContent = `Pyodide: ${status}`;
+      if (dotEl) {
+        dotEl.className = `w-2 h-2 rounded-full ${colorClass}`;
+      }
+    }
+
+    async function ensurePyodideSandbox() {
+      if (state.pyodideReady && state.pyodide) return state.pyodide;
+
+      updatePyodideBadge('Loading WASM...', 'bg-amber-400 animate-pulse');
+      logConsole('Initializing isolated Pyodide WebAssembly Python runtime...', 'info');
+
+      if (!window.loadPyodide) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js';
+          script.onload = resolve;
+          script.onerror = () => reject(new Error('Failed to load Pyodide CDN script.'));
+          document.head.appendChild(script);
+        });
+      }
+
+      const pyodide = await window.loadPyodide({
+        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/',
+      });
+
+      // Attempt to install pytest via micropip; gracefully fall back to built-in runner if network blocks PyPI
+      try {
+        updatePyodideBadge('Installing pytest...', 'bg-amber-400 animate-pulse');
+        logConsole('Loading micropip & installing pytest inside sandbox...', 'muted');
+        await pyodide.loadPackage('micropip');
+        await pyodide.runPythonAsync(`
+import micropip
+await micropip.install("pytest")
+        `);
+        state.pytestInstalled = true;
+        logConsole('pytest installed in WebAssembly sandbox.', 'success');
+      } catch (pkgErr) {
+        state.pytestInstalled = false;
+        logConsole('PyPI/micropip unreachable; activating built-in zero-dependency pytest-compatible runner.', 'warn');
+      }
+
+      state.pyodide = pyodide;
+      state.pyodideReady = true;
+      updatePyodideBadge(state.pytestInstalled ? 'Ready (pytest)' : 'Ready (Built-in Runner)', 'bg-emerald-400');
+      return pyodide;
+    }
+
+    async function runPytestInSandbox(testCode) {
+      const pyodide = await ensurePyodideSandbox();
+
+      // Prepare clean /workspace directory inside Pyodide virtual FS
+      pyodide.globals.set('__js_files__', pyodide.toPy(state.projectFiles));
+      pyodide.globals.set('__js_test_code__', testCode);
+      pyodide.globals.set('__use_pytest__', state.pytestInstalled);
+
+      const runnerScript = `
+import os
+import sys
+import shutil
+import io
+import traceback
+import importlib.util
+
+workspace = "/workspace"
+if os.path.exists(workspace):
+    shutil.rmtree(workspace)
+os.makedirs(workspace, exist_ok=True)
+
+# Write project files into /workspace
+files_dict = __js_files__.to_py()
+for rel_path, content in files_dict.items():
+    full_path = os.path.join(workspace, rel_path)
+    parent = os.path.dirname(full_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+test_file_path = os.path.join(workspace, "test_agent_repro.py")
+with open(test_file_path, "w", encoding="utf-8") as f:
+    f.write(__js_test_code__)
+
+os.chdir(workspace)
+if workspace not in sys.path:
+    sys.path.insert(0, workspace)
+
+# Evict any cached project modules from previous attempts
+for mod_name in list(sys.modules.keys()):
+    mod = sys.modules.get(mod_name)
+    mod_file = getattr(mod, "__file__", "") or ""
+    if workspace in mod_file or mod_name == "test_agent_repro":
+        del sys.modules[mod_name]
+
+stdout_buf = io.StringIO()
+stderr_buf = io.StringIO()
+old_stdout, old_stderr = sys.stdout, sys.stderr
+sys.stdout, sys.stderr = stdout_buf, stderr_buf
+
+exit_code = 0
+try:
+    if __use_pytest__:
+        import pytest
+        exit_code = int(pytest.main([test_file_path, "-v", "--tb=short"]))
+    else:
+        # Built-in pytest-compatible test executor fallback
+        spec = importlib.util.spec_from_file_location("test_agent_repro", test_file_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        test_funcs = [getattr(mod, fn) for fn in dir(mod) if fn.startswith("test_") and callable(getattr(mod, fn))]
+        if not test_funcs:
+            print("COLLECTED 0 ITEMS: No test_* functions found in test_agent_repro.py")
+            exit_code = 2
+        else:
+            failures = 0
+            for fn in test_funcs:
+                try:
+                    fn()
+                    print(f"test_agent_repro.py::{fn.__name__} PASSED")
+                except Exception:
+                    failures += 1
+                    print(f"test_agent_repro.py::{fn.__name__} FAILED")
+                    traceback.print_exc()
+            exit_code = 1 if failures > 0 else 0
+except Exception:
+    exit_code = 2
+    traceback.print_exc()
+finally:
+    sys.stdout, sys.stderr = old_stdout, old_stderr
+
+logs = f"EXIT CODE: {exit_code}\\n" + stdout_buf.getvalue()
+err_out = stderr_buf.getvalue()
+if err_out.strip():
+    logs += f"\\nSTDERR:\\n{err_out}"
+
+{"exit_code": exit_code, "logs": logs}
+`;
+
+      const pyResult = await pyodide.runPythonAsync(runnerScript);
+      const resultObj = pyResult.toJs({ dict_converter: Object.fromEntries });
+      pyResult.destroy();
+      return resultObj;
+    }
+
+    // =========================================================================
+    // MAIN ORCHESTRATOR: FOUNDATION MVP + ADVANCED AUTONOMOUS LOOP
+    // =========================================================================
+    document.getElementById('runTriageBtn').addEventListener('click', async () => {
+      const apiKey = document.getElementById('apiKeyInput').value.trim();
+      const bugDescription = document.getElementById('bugDescription').value.trim();
+
+      if (!apiKey) {
+        showToast('Please enter your Gemini API key first.', 'warning');
+        document.getElementById('apiKeyInput').focus();
+        return;
+      }
+      if (Object.keys(state.projectFiles).length === 0) {
+        showToast('Please upload a Python .zip project or click "Load Sample Buggy Project".', 'warning');
+        return;
+      }
+      if (!bugDescription && !state.screenshotBase64) {
+        showToast('Please provide either a bug description/traceback or an error screenshot.', 'warning');
+        return;
+      }
+
+      const runBtn = document.getElementById('runTriageBtn');
+      const runLabel = document.getElementById('runBtnLabel');
+      runBtn.disabled = true;
+      runLabel.textContent = 'Agent Running...';
+
+      const startTime = performance.now();
+      const timerInterval = setInterval(() => {
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+        document.getElementById('pipelineTimer').textContent = `${elapsed}s`;
+      }, 100);
+
+      try {
+        // Step 1 already done when ZIP was loaded
+        setStepState(1, 'done', `${Object.keys(state.projectFiles).length} .py files ready`);
+
+        // Step 2: Multimodal Error Extraction
+        const activeModel = getActiveModel();
+        setStepState(2, 'active', `Calling ${activeModel}...`);
+        logConsole(`Step 2: Extracting exception details and stack frames via ${activeModel}${state.screenshotBase64 ? ' (Text + Vision)' : ' (Text-only, no screenshot attached)'}...`, 'info');
+        const parsedError = await extractErrorWithGemini(apiKey, bugDescription);
+        setStepState(2, 'done', `${parsedError.exception_type} (${parsedError.frames.length} frames)`);
+        logConsole(`Extracted ${parsedError.exception_type}: "${parsedError.error_message}" across ${parsedError.frames.length} stack frame(s).`, 'success');
+
+        // Step 3 & Step 4: Hypothesis + Optional Autonomous Pytest Loop
+        const maxAttempts = state.mode === 'advanced' ? 3 : 1;
+        let feedbackHistory = '';
+        let hypothesis = null;
+        let reproStatus = 'NOT_RUN (MVP)';
+        let reproLogs = '';
+        let attemptsUsed = 1;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          attemptsUsed = attempt;
+          setStepState(3, 'active', state.mode === 'advanced' ? `Hypothesis (Attempt ${attempt}/${maxAttempts})` : 'Analyzing suspects...');
+          logConsole(`Step 3 [Attempt ${attempt}/${maxAttempts}]: Localizing suspect functions and synthesizing patch...`, 'info');
+
+          hypothesis = await generateHypothesisWithGemini(apiKey, parsedError, bugDescription, feedbackHistory);
+          setStepState(3, 'done', `${hypothesis.suspects.length} suspect(s) localized`);
+
+          if (state.mode === 'mvp') {
+            setStepState(4, 'idle', 'Skipped in MVP mode');
+            logConsole('Foundation MVP complete. Skipping Pyodide test execution.', 'muted');
+            break;
+          }
+
+          // Advanced Mode: Run pytest in Pyodide sandbox
+          setStepState(4, 'active', `Loading Pyodide & pytest (${attempt}/${maxAttempts})...`);
+          logConsole(`Step 4 [Attempt ${attempt}/${maxAttempts}]: Booting Pyodide sandbox (first run downloads ~10MB WASM runtime) & running pytest...`, 'info');
+
+          const sandboxRes = await runPytestInSandbox(hypothesis.reproduction_test_code);
+          reproLogs = sandboxRes.logs;
+
+          if (sandboxRes.exit_code === 1) {
+            // Exit code 1 means pytest ran and FAILED on the buggy code -> Bug Reproduced!
+            reproStatus = 'REPRODUCED (Test Failed as Expected)';
+            setStepState(4, 'done', `Reproduced on Attempt ${attempt}`);
+            logConsole(`SUCCESS: Pytest failed with Exit Code 1 — bug reliably reproduced on Attempt ${attempt}!`, 'success');
+            break;
+          } else if (sandboxRes.exit_code === 0) {
+            reproStatus = 'UNCONFIRMED (Test Passed)';
+            logConsole(`Attempt ${attempt}: Pytest unexpectedly PASSED (Exit Code 0). Feeding logs back to refine hypothesis...`, 'warn');
+            feedbackHistory += `\n--- ATTEMPT ${attempt} FAILED TO REPRODUCE BUG ---\n` +
+              `Your previous test PASSED (Exit Code 0) against the buggy code instead of failing.\n` +
+              `Previous test code:\n${hypothesis.reproduction_test_code}\n` +
+              `Sandbox output:\n${sandboxRes.logs}\n` +
+              `Adjust the test inputs/edge cases so the test triggers the exact bug and FAILS on the unpatched code.\n`;
+          } else {
+            reproStatus = 'UNCONFIRMED (Test Passed)';
+            logConsole(`Attempt ${attempt}: Test execution error (Exit Code ${sandboxRes.exit_code}). Refining test syntax/imports...`, 'warn');
+            feedbackHistory += `\n--- ATTEMPT ${attempt} TEST ERROR (EXIT CODE ${sandboxRes.exit_code}) ---\n` +
+              `Your previous test had an import or syntax error.\n` +
+              `Sandbox output:\n${sandboxRes.logs}\n` +
+              `Fix the imports/syntax so pytest can run cleanly.\n`;
+          }
+
+          if (attempt === maxAttempts) {
+            setStepState(4, 'error', 'Max attempts reached');
+            logConsole('Reached maximum refinement attempts without reproducing failure.', 'warn');
+          }
+        }
+
+        // Save & Render Final Developer Triage Report
+        state.latestReport = {
+          parsedError,
+          hypothesis,
+          reproStatus,
+          reproLogs,
+          attemptsUsed,
+          maxAttempts,
+        };
+
+        renderTriageReport(state.latestReport);
+        showToast('Triage report generated!', 'success');
+
+      } catch (err) {
+        logConsole(`Pipeline Error: ${err.message}`, 'error');
+        showToast(err.message, 'error');
+      } finally {
+        clearInterval(timerInterval);
+        runBtn.disabled = false;
+        runLabel.textContent = 'Run Autonomous Bug Triage';
+      }
+    });
+
+    // =========================================================================
+    // RENDER DEVELOPER TRIAGE REPORT
+    // =========================================================================
+    function renderTriageReport(report) {
+      const { parsedError, hypothesis, reproStatus, reproLogs, attemptsUsed, maxAttempts } = report;
+
+      document.getElementById('emptyReportState').classList.add('hidden');
+      const container = document.getElementById('triageReportContainer');
+      container.classList.remove('hidden');
+
+      // Title & Badge
+      document.getElementById('reportExceptionTitle').textContent =
+        `${parsedError.exception_type}: ${parsedError.error_message}`;
+
+      const badge = document.getElementById('reproStatusBadge');
+      badge.textContent = reproStatus;
+      badge.className = 'text-xs font-mono font-semibold px-3 py-1.5 rounded-full border ';
+      if (reproStatus.startsWith('REPRODUCED')) {
+        badge.className += 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40';
+      } else if (reproStatus.startsWith('UNCONFIRMED')) {
+        badge.className += 'bg-amber-500/15 text-amber-300 border-amber-500/40';
+      } else {
+        badge.className += 'bg-slate-800 text-slate-300 border-slate-700';
+      }
+
+      // Root Cause
+      document.getElementById('reportRootCause').textContent = hypothesis.root_cause;
+
+      // Stack Frames Table
+      const tbody = document.getElementById('stackFramesTableBody');
+      if (parsedError.frames && parsedError.frames.length > 0) {
+        tbody.innerHTML = parsedError.frames
+          .map(f => `
+            <tr>
+              <td class="py-2 px-3 text-cyan-300">${escapeHtml(f.file_path)}</td>
+              <td class="py-2 px-3 text-amber-300">L${escapeHtml(f.line_number)}</td>
+              <td class="py-2 px-3 text-indigo-300">${escapeHtml(f.function_name)}()</td>
+              <td class="py-2 px-3 text-slate-400 truncate max-w-xs">${escapeHtml(f.code_context || '—')}</td>
+            </tr>
+          `)
+          .join('');
+      } else {
+        tbody.innerHTML = `<tr><td colspan="4" class="py-3 px-3 text-slate-500 text-center">No explicit stack frames extracted from input.</td></tr>`;
+      }
+
+      // Suspect Locations
+      const suspectsEl = document.getElementById('suspectsList');
+      suspectsEl.innerHTML = hypothesis.suspects
+        .map(s => `
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+              <div class="font-mono text-xs flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30">${escapeHtml(s.file_path)}</span>
+                <span class="text-indigo-300 font-semibold">${escapeHtml(s.function_name)}()</span>
+              </div>
+              <span class="text-[11px] font-mono text-slate-400">Lines ${escapeHtml(s.start_line)}–${escapeHtml(s.end_line)}</span>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">${escapeHtml(s.reasoning)}</p>
+          </div>
+        `)
+        .join('');
+
+      // Pytest Sandbox Section (Advanced Mode)
+      const sandboxSection = document.getElementById('pytestSandboxSection');
+      if (state.mode === 'advanced') {
+        sandboxSection.classList.remove('hidden');
+        document.getElementById('attemptCountBadge').textContent = `Attempt ${attemptsUsed}/${maxAttempts}`;
+        document.getElementById('generatedTestCode').textContent = hypothesis.reproduction_test_code || '';
+        document.getElementById('sandboxLogsOutput').textContent = reproLogs || 'No execution logs captured.';
+      } else {
+        sandboxSection.classList.add('hidden');
+      }
+
+      // Syntax-Highlighted Unified Diff
+      const diffViewer = document.getElementById('diffViewer');
+      const diffLines = (hypothesis.suggested_diff || '').split(/\r?\n/);
+      diffViewer.innerHTML = diffLines
+        .map(line => {
+          let cls = 'px-2 py-0.5 text-slate-300 whitespace-pre';
+          if (line.startsWith('+') && !line.startsWith('+++')) {
+            cls = 'px-2 py-0.5 diff-add whitespace-pre';
+          } else if (line.startsWith('-') && !line.startsWith('---')) {
+            cls = 'px-2 py-0.5 diff-del whitespace-pre';
+          } else if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
+            cls = 'px-2 py-0.5 diff-hunk whitespace-pre';
+          }
+          return `<div class="${cls}">${escapeHtml(line || ' ')}</div>`;
+        })
+        .join('');
+
+      container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    // =========================================================================
+    // CLIPBOARD & PATCHED ZIP EXPORT ACTIONS
+    // =========================================================================
+    function copyTextToClipboard(text, label) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        showToast(`${label} copied to clipboard!`, 'success');
+      } catch (err) {
+        showToast('Failed to copy text.', 'error');
+      }
+      document.body.removeChild(textarea);
+    }
+
+    document.getElementById('copyPatchBtn').addEventListener('click', () => {
+      if (!state.latestReport) return;
+      copyTextToClipboard(state.latestReport.hypothesis.suggested_diff, 'Unified diff patch');
+    });
+
+    document.getElementById('copyTestBtn').addEventListener('click', () => {
+      if (!state.latestReport) return;
+      copyTextToClipboard(state.latestReport.hypothesis.reproduction_test_code, 'Pytest reproduction file');
+    });
+
+    document.getElementById('downloadPatchedZipBtn').addEventListener('click', async () => {
+      if (!state.latestReport) return;
+      try {
+        const zip = new JSZip();
+        const patchedMap = { ...state.allZipFiles };
+
+        // Apply updated file contents returned by Gemini
+        const updates = state.latestReport.hypothesis.patched_files || [];
+        for (const item of updates) {
+          if (item.file_path && item.updated_content) {
+            patchedMap[item.file_path] = item.updated_content;
+          }
+        }
+
+        // Also include the generated pytest regression test and triage patch
+        if (state.latestReport.hypothesis.reproduction_test_code) {
+          patchedMap['tests/test_agent_repro.py'] = state.latestReport.hypothesis.reproduction_test_code;
+        }
+        patchedMap['TRIAGE_FIX.patch'] = state.latestReport.hypothesis.suggested_diff || '';
+
+        for (const [path, content] of Object.entries(patchedMap)) {
+          zip.file(path, content);
+        }
+
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const baseName = state.zipFileName.replace(/\.zip$/i, '');
+        a.href = url;
+        a.download = `${baseName}_patched.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showToast(`Downloaded ${baseName}_patched.zip with fix & regression test!`, 'success');
+      } catch (err) {
+        showToast('Failed to export patched ZIP: ' + err.message, 'error');
+      }
+    });
+  </script>
+</body>
+</html>
