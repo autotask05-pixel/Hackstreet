@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PyTriage AI — Autonomous Python Bug Triage Agent</title>
+  <title>BugRepro — Python Bug Triage</title>
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- JSZip for in-browser zip creation & extraction -->
@@ -80,10 +80,10 @@
         </div>
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="font-bold text-base sm:text-lg tracking-tight text-white">PyTriage AI</h1>
+            <h1 class="font-bold text-base sm:text-lg tracking-tight text-white">BugRepro</h1>
             <span id="headerModelBadge" class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">gemini-3.8-flash</span>
           </div>
-          <p class="text-xs text-slate-400 hidden sm:block">Autonomous Python Bug Triage &amp; Pyodide Pytest Sandbox</p>
+          <p class="text-xs text-slate-400 hidden sm:block">Python bug investigation and reproduction</p>
         </div>
       </div>
 
@@ -136,7 +136,7 @@
           <select id="modelSelect" title="Select Gemini Model"
             class="sm:w-44 bg-slate-950 border border-slate-700/80 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 rounded-xl px-3 py-2.5 text-xs font-mono text-indigo-300 outline-none transition">
             <option value="gemini-3.8-flash" selected>gemini-3.8-flash</option>
-            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
             <option value="custom">Custom model...</option>
           </select>
         </div>
@@ -242,7 +242,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
             <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <span id="runBtnLabel">Run Autonomous Bug Triage</span>
+          <span id="runBtnLabel">Run Bug Triage</span>
         </button>
       </div>
     </section>
@@ -441,7 +441,7 @@
     // GLOBAL APPLICATION STATE & UI HELPERS
     // =========================================================================
     const state = {
-      mode: 'advanced', // 'mvp' or 'advanced'
+      mode: 'mvp', // 'mvp' or 'advanced'
       zipFileName: 'project.zip',
       allZipFiles: {},   // All text files in the archive
       projectFiles: {},  // Python (.py) files indexed for triage
@@ -553,7 +553,7 @@
     }
 
     // Initialize default mode & model UI listeners
-    setAgentMode('advanced');
+    setAgentMode('mvp');
 
     document.getElementById('toggleKeyBtn').addEventListener('click', () => {
       const input = document.getElementById('apiKeyInput');
@@ -606,6 +606,9 @@
       if (typeof JSZip === 'undefined') {
         throw new Error('JSZip library failed to load. Check your internet connection.');
       }
+      if (arrayBuffer.byteLength > 10 * 1024 * 1024) {
+        throw new Error('The ZIP is larger than 10 MB. Please upload a smaller project.');
+      }
 
       const zip = await JSZip.loadAsync(arrayBuffer);
       const rawEntries = [];
@@ -620,15 +623,20 @@
       if (rawEntries.length === 0) {
         throw new Error('The uploaded ZIP archive contains no readable files.');
       }
+      if (rawEntries.length > 500) {
+        throw new Error('The ZIP contains more than 500 files. Remove generated or dependency files and try again.');
+      }
 
       // Strip single top-level wrapper directory if all entries share one (e.g. "sample_billing_project/app.py" -> "app.py")
       const topDirs = new Set(rawEntries.map(e => (e.path.includes('/') ? e.path.split('/')[0] : '')));
-      const stripPrefix = topDirs.size === 1 && ![...topDirs][0] === false && [...topDirs][0] !== ''
-        ? `${[...topDirs][0]}/`
+      const onlyTopDir = [...topDirs][0];
+      const stripPrefix = topDirs.size === 1 && onlyTopDir !== ''
+        ? `${onlyTopDir}/`
         : '';
 
       const allZipFiles = {};
       const projectFiles = {};
+      let pythonBytes = 0;
 
       for (const item of rawEntries) {
         const cleanPath = stripPrefix && item.path.startsWith(stripPrefix)
@@ -640,9 +648,14 @@
           const text = await item.entry.async('string');
           allZipFiles[cleanPath] = text;
           if (cleanPath.endsWith('.py')) {
+            pythonBytes += new Blob([text]).size;
+            if (Object.keys(projectFiles).length >= 100 || pythonBytes > 1_000_000) {
+              throw new Error('The project has too much Python source to analyze (limit: 100 files and 1 MB).');
+            }
             projectFiles[cleanPath] = text;
           }
-        } catch (_) {
+        } catch (err) {
+          if (String(err.message || '').startsWith('The project has too much Python source')) throw err;
           // Skip binary assets
         }
       }
@@ -862,16 +875,19 @@ ZeroDivisionError: division by zero`;
       const modelId = getActiveModel().replace(/^models\//, '');
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
+      const isGemini3Model = modelId.startsWith('gemini-3.');
       const generationConfig = {
-        temperature,
         maxOutputTokens: 4096,
         responseMimeType: 'application/json',
         responseSchema,
       };
 
-      // Disable prolonged thinking tokens on Flash models so structured JSON returns rapidly
-      if (modelId.includes('flash')) {
-        generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      if (isGemini3Model) {
+        // Gemini 3.x uses thinkingLevel; thinkingBudget: 0 is not a valid setting.
+        // These models also work best with their default sampling settings.
+        generationConfig.thinkingConfig = { thinkingLevel: 'low' };
+      } else {
+        generationConfig.temperature = temperature;
       }
 
       const payload = {
@@ -879,28 +895,42 @@ ZeroDivisionError: division by zero`;
         generationConfig,
       };
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
       let res;
-      try {
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-      } catch (err) {
-        if (err.name === 'AbortError') {
-          throw new Error(`Gemini request timed out after ${Math.round(timeoutMs / 1000)}s. Try Foundation MVP mode or check your network/API key.`);
+      let data;
+      const maxOverloadRetries = 2;
+      for (let attempt = 0; attempt <= maxOverloadRetries; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            throw new Error(`Gemini request timed out after ${Math.round(timeoutMs / 1000)}s. Try Foundation MVP mode or check your network/API key.`);
+          }
+          throw err;
+        } finally {
+          clearTimeout(timeoutId);
         }
-        throw err;
-      } finally {
-        clearTimeout(timeoutId);
+
+        data = await res.json();
+        if (res.status !== 503 || attempt === maxOverloadRetries) break;
+        const delayMs = 1000 * (2 ** attempt);
+        logConsole(`Gemini is busy (503). Retrying in ${delayMs / 1000}s (${attempt + 1}/${maxOverloadRetries})...`, 'warn');
+        await new Promise(resolve => setTimeout(resolve, delayMs));
       }
 
-      const data = await res.json();
       if (!res.ok) {
+        if (res.status === 503) {
+          throw new Error(`Gemini is temporarily overloaded (503). Wait a little and retry, or select gemini-3.5-flash-lite from the model menu. Details: ${data?.error?.message || 'Service unavailable.'}`);
+        }
+        if (res.status === 429) {
+          throw new Error(`Gemini rate limit reached (429). Check your AI Studio usage limits, then wait and retry. Details: ${data?.error?.message || 'Rate limit exceeded.'}`);
+        }
         const errMsg = data?.error?.message || `Gemini API HTTP ${res.status}`;
         throw new Error(errMsg);
       }
@@ -1220,7 +1250,7 @@ if err_out.strip():
       const bugDescription = document.getElementById('bugDescription').value.trim();
 
       if (!apiKey) {
-        showToast('Please enter your Gemini API key first.', 'warning');
+        showToast('Add a Gemini API key to run the analysis. The key is used for this session only.', 'warning');
         document.getElementById('apiKeyInput').focus();
         return;
       }
@@ -1333,7 +1363,7 @@ if err_out.strip():
       } finally {
         clearInterval(timerInterval);
         runBtn.disabled = false;
-        runLabel.textContent = 'Run Autonomous Bug Triage';
+        runLabel.textContent = 'Run Bug Triage';
       }
     });
 
